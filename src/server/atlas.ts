@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
+import path from "node:path";
 import type { PipelineEvent, WorkDetail } from "@/data/types";
 import { cachePath, readJson } from "@/pipeline/cache";
 import { configKey, readConfig } from "@/pipeline/config";
@@ -63,7 +65,13 @@ function startJob(): Job {
   return job;
 }
 
-const atlasFile = () => cachePath(`atlas-${configKey(readConfig())}.json`);
+/** Prebuilt output committed in data/ wins over .cache/ (Vercel functions can't run the pipeline). */
+const served = (name: string) => {
+  const committed = path.join(process.cwd(), "data", name);
+  return existsSync(committed) ? committed : cachePath(name);
+};
+
+const atlasFile = () => served(`atlas-${configKey(readConfig())}.json`);
 
 const exists = (file: string) => stat(file).then(() => true, () => false);
 
@@ -73,6 +81,7 @@ const exists = (file: string) => stat(file).then(() => true, () => false);
  */
 export async function streamAtlas(refresh: boolean, write: Write): Promise<void> {
   if (refresh || !(await exists(atlasFile()))) {
+    if (process.env.VERCEL) throw new Error("No prebuilt atlas for this config. Run `pnpm pipeline` and commit data/.");
     const job = (g.__atlasJob ??= startJob());
     if (job.last) write(job.last);
     job.listeners.add(write);
@@ -91,7 +100,7 @@ export const errorLine = (message: string) => line({ type: "error", message });
 let detailCache: { file: string; mtime: number; data: Record<string, WorkDetail> } | null = null;
 
 export async function loadDetail(id: string): Promise<WorkDetail | null> {
-  const file = cachePath(`details-${configKey(readConfig())}.json`);
+  const file = served(`details-${configKey(readConfig())}.json`);
   const info = await stat(file).catch(() => null);
   if (!info) return null;
   if (detailCache?.file !== file || detailCache.mtime !== info.mtimeMs) {
